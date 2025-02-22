@@ -409,6 +409,7 @@ const PureToolbar = ({
               : {
                   opacity: 1,
                   y: 0,
+                  height: toolsByBlockKind[blockKind].length * 50,
                   height: toolsByArtifactKind.length * 50,
                   transition: { delay: 0 },
                   scale: 1,
