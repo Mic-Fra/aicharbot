@@ -1,26 +1,19 @@
 import {
   type Message,
-  StreamData,
-  convertToCoreMessages,
-  streamObject,
+  createDataStreamResponse,
+  smoothStream,
   streamText,
 } from 'ai';
-import { z } from 'zod';
 
 import { auth } from '@/app/(auth)/auth';
-import { customModel } from '@/lib/ai';
-import { models } from '@/lib/ai/models';
+import { myProvider } from '@/lib/ai/models';
 import { systemPrompt } from '@/lib/ai/prompts';
 import {
   deleteChatById,
   getChatById,
-  getDocumentById,
   saveChat,
-  saveDocument,
   saveMessages,
-  saveSuggestions,
 } from '@/lib/db/queries';
-import type { Suggestion } from '@/lib/db/schema';
 import {
   generateUUID,
   getMostRecentUserMessage,
@@ -28,31 +21,19 @@ import {
 } from '@/lib/utils';
 
 import { generateTitleFromUserMessage } from '../../actions';
+import { createDocument } from '@/lib/ai/tools/create-document';
+import { updateDocument } from '@/lib/ai/tools/update-document';
+import { requestSuggestions } from '@/lib/ai/tools/request-suggestions';
+import { getWeather } from '@/lib/ai/tools/get-weather';
 
 export const maxDuration = 60;
-
-type AllowedTools =
-  | 'createDocument'
-  | 'updateDocument'
-  | 'requestSuggestions'
-  | 'getWeather';
-
-const blocksTools: AllowedTools[] = [
-  'createDocument',
-  'updateDocument',
-  'requestSuggestions',
-];
-
-const weatherTools: AllowedTools[] = ['getWeather'];
-
-const allTools: AllowedTools[] = [...blocksTools, ...weatherTools];
 
 export async function POST(request: Request) {
   const {
     id,
     messages,
-    modelId,
-  }: { id: string; messages: Array<Message>; modelId: string } =
+    selectedChatModel,
+  }: { id: string; messages: Array<Message>; selectedChatModel: string } =
     await request.json();
 
   const session = await auth();
@@ -61,14 +42,7 @@ export async function POST(request: Request) {
     return new Response('Unauthorized', { status: 401 });
   }
 
-  const model = models.find((model) => model.id === modelId);
-
-  if (!model) {
-    return new Response('Model not found', { status: 404 });
-  }
-
-  const coreMessages = convertToCoreMessages(messages);
-  const userMessage = getMostRecentUserMessage(coreMessages);
+  const userMessage = getMostRecentUserMessage(messages);
 
   if (!userMessage) {
     return new Response('No user message found', { status: 400 });
@@ -82,9 +56,7 @@ export async function POST(request: Request) {
   }
 
   await saveMessages({
-    messages: [
-      { ...userMessage, id: generateUUID(), createdAt: new Date(), chatId: id },
-    ],
+    messages: [{ ...userMessage, createdAt: new Date(), chatId: id }],
   });
 
   const streamingData = new StreamData();
@@ -225,31 +197,56 @@ export async function POST(request: Request) {
 
             if (type === 'text-delta') {
               const { textDelta } = delta;
-
-              draftText += textDelta;
-              streamingData.append({
-                type: 'text-delta',
-                content: textDelta,
+  return createDataStreamResponse({
+    execute: (dataStream) => {
+      const result = streamText({
+        model: myProvider.languageModel(selectedChatModel),
+        system: systemPrompt({ selectedChatModel }),
+        messages,
+        maxSteps: 5,
+        experimental_activeTools:
+          selectedChatModel === 'chat-model-reasoning'
+            ? []
+            : [
+                'getWeather',
+                'createDocument',
+                'updateDocument',
+                'requestSuggestions',
+              ],
+        experimental_transform: smoothStream({ chunking: 'word' }),
+        experimental_generateMessageId: generateUUID,
+        tools: {
+          getWeather,
+          createDocument: createDocument({ session, dataStream }),
+          updateDocument: updateDocument({ session, dataStream }),
+          requestSuggestions: requestSuggestions({
+            session,
+            dataStream,
+          }),
+        },
+        onFinish: async ({ response, reasoning }) => {
+          if (session.user?.id) {
+            try {
+              const sanitizedResponseMessages = sanitizeResponseMessages({
+                messages: response.messages,
+                reasoning,
               });
+
+              await saveMessages({
+                messages: sanitizedResponseMessages.map((message) => {
+                  return {
+                    id: message.id,
+                    chatId: id,
+                    role: message.role,
+                    content: message.content,
+                    createdAt: new Date(),
+                  };
+                }),
+              });
+            } catch (error) {
+              console.error('Failed to save chat');
             }
           }
-
-          streamingData.append({ type: 'finish', content: '' });
-
-          if (session.user?.id) {
-            await saveDocument({
-              id,
-              title: document.title,
-              content: draftText,
-              userId: session.user.id,
-            });
-          }
-
-          return {
-            id,
-            title: document.title,
-            content: 'The document has been updated successfully.',
-          };
         },
       },
       requestSuggestions: {
@@ -336,38 +333,21 @@ export async function POST(request: Request) {
             messages: responseMessagesWithoutIncompleteToolCalls.map(
               (message) => {
                 const messageId = generateUUID();
+        experimental_telemetry: {
+          isEnabled: true,
+          functionId: 'stream-text',
+        },
+      });
 
-                if (message.role === 'assistant') {
-                  streamingData.appendMessageAnnotation({
-                    messageIdFromServer: messageId,
-                  });
-                }
+      result.consumeStream();
 
-                return {
-                  id: messageId,
-                  chatId: id,
-                  role: message.role,
-                  content: message.content,
-                  createdAt: new Date(),
-                };
-              },
-            ),
-          });
-        } catch (error) {
-          console.error('Failed to save chat');
-        }
-      }
-
-      streamingData.close();
+      result.mergeIntoDataStream(dataStream, {
+        sendReasoning: true,
+      });
     },
-    experimental_telemetry: {
-      isEnabled: true,
-      functionId: 'stream-text',
+    onError: () => {
+      return 'Oops, an error occured!';
     },
-  });
-
-  return result.toDataStreamResponse({
-    data: streamingData,
   });
 }
 

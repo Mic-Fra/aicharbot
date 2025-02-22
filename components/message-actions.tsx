@@ -4,7 +4,6 @@ import { useSWRConfig } from 'swr';
 import { useCopyToClipboard } from 'usehooks-ts';
 
 import type { Vote } from '@/lib/db/schema';
-import { getMessageIdFromAnnotations } from '@/lib/utils';
 
 import { CopyIcon, ThumbDownIcon, ThumbUpIcon } from './icons';
 import { Button } from './ui/button';
@@ -14,8 +13,10 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from './ui/tooltip';
+import { memo } from 'react';
+import equal from 'fast-deep-equal';
 
-export function MessageActions({
+export function PureMessageActions({
   chatId,
   message,
   vote,
@@ -60,13 +61,11 @@ export function MessageActions({
               disabled={vote?.isUpvoted}
               variant="outline"
               onClick={async () => {
-                const messageId = getMessageIdFromAnnotations(message);
-
                 const upvote = fetch('/api/vote', {
                   method: 'PATCH',
                   body: JSON.stringify({
                     chatId,
-                    messageId,
+                    messageId: message.id,
                     type: 'up',
                   }),
                 });
@@ -114,13 +113,11 @@ export function MessageActions({
               variant="outline"
               disabled={vote && !vote.isUpvoted}
               onClick={async () => {
-                const messageId = getMessageIdFromAnnotations(message);
-
                 const downvote = fetch('/api/vote', {
                   method: 'PATCH',
                   body: JSON.stringify({
                     chatId,
-                    messageId,
+                    messageId: message.id,
                     type: 'down',
                   }),
                 });
@@ -164,3 +161,13 @@ export function MessageActions({
     </TooltipProvider>
   );
 }
+
+export const MessageActions = memo(
+  PureMessageActions,
+  (prevProps, nextProps) => {
+    if (!equal(prevProps.vote, nextProps.vote)) return false;
+    if (prevProps.isLoading !== nextProps.isLoading) return false;
+
+    return true;
+  },
+);

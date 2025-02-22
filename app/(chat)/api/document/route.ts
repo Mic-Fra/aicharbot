@@ -1,4 +1,5 @@
 import { auth } from '@/app/(auth)/auth';
+import { ArtifactKind } from '@/components/artifact';
 import {
   deleteDocumentsByIdAfterTimestamp,
   getDocumentsById,
@@ -48,7 +49,11 @@ export async function POST(request: Request) {
     return new Response('Unauthorized', { status: 401 });
   }
 
-  const { content, title }: { content: string; title: string } =
+  const {
+    content,
+    title,
+    kind,
+  }: { content: string; title: string; kind: ArtifactKind } =
     await request.json();
 
   if (session.user?.id) {
@@ -56,6 +61,7 @@ export async function POST(request: Request) {
       id,
       content,
       title,
+      kind,
       userId: session.user.id,
     });
 

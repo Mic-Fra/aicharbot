@@ -1,7 +1,7 @@
 import 'server-only';
 
 import { genSaltSync, hashSync } from 'bcrypt-ts';
-import { and, asc, desc, eq, gt } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, gte, inArray } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
 
@@ -16,6 +16,7 @@ import {
   message,
   vote,
 } from './schema';
+import { ArtifactKind } from '@/components/artifact';
 
 // Optionally, if not using email/pass login, you can
 // use the Drizzle adapter for Auth.js / NextAuth
@@ -169,11 +170,13 @@ export async function getVotesByChatId({ id }: { id: string }) {
 export async function saveDocument({
   id,
   title,
+  kind,
   content,
   userId,
 }: {
   id: string;
   title: string;
+  kind: ArtifactKind;
   content: string;
   userId: string;
 }) {
@@ -181,6 +184,7 @@ export async function saveDocument({
     return await db.insert(document).values({
       id,
       title,
+      kind,
       content,
       userId,
       createdAt: new Date(),
@@ -276,6 +280,68 @@ export async function getSuggestionsByDocumentId({
     console.error(
       'Failed to get suggestions by document version from database',
     );
+    throw error;
+  }
+}
+
+export async function getMessageById({ id }: { id: string }) {
+  try {
+    return await db.select().from(message).where(eq(message.id, id));
+  } catch (error) {
+    console.error('Failed to get message by id from database');
+    throw error;
+  }
+}
+
+export async function deleteMessagesByChatIdAfterTimestamp({
+  chatId,
+  timestamp,
+}: {
+  chatId: string;
+  timestamp: Date;
+}) {
+  try {
+    const messagesToDelete = await db
+      .select({ id: message.id })
+      .from(message)
+      .where(
+        and(eq(message.chatId, chatId), gte(message.createdAt, timestamp)),
+      );
+
+    const messageIds = messagesToDelete.map((message) => message.id);
+
+    if (messageIds.length > 0) {
+      await db
+        .delete(vote)
+        .where(
+          and(eq(vote.chatId, chatId), inArray(vote.messageId, messageIds)),
+        );
+
+      return await db
+        .delete(message)
+        .where(
+          and(eq(message.chatId, chatId), inArray(message.id, messageIds)),
+        );
+    }
+  } catch (error) {
+    console.error(
+      'Failed to delete messages by id after timestamp from database',
+    );
+    throw error;
+  }
+}
+
+export async function updateChatVisiblityById({
+  chatId,
+  visibility,
+}: {
+  chatId: string;
+  visibility: 'private' | 'public';
+}) {
+  try {
+    return await db.update(chat).set({ visibility }).where(eq(chat.id, chatId));
+  } catch (error) {
+    console.error('Failed to update chat visibility in database');
     throw error;
   }
 }
